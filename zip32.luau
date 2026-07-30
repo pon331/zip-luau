@@ -574,10 +574,7 @@ end
 
 @[native, checked] const function Deflate(Data: buffer, SearchDepth: number?): buffer
 	const Size = buffer.len(Data)
-	local Depth = DEFAULT_SEARCH_DEPTH
-	if SearchDepth ~= nil then
-		Depth = math.clamp(math.floor(SearchDepth), 1, MAX_SEARCH_DEPTH)
-	end
+	const Depth = if SearchDepth then math.clamp(SearchDepth // 1, 1, MAX_SEARCH_DEPTH) else DEFAULT_SEARCH_DEPTH
 
 	const Tokens, TokenCount, LitFrequencies, DistFrequencies = Tokenize(Data, Depth)
 	const LitLengths = BuildCodeLengths(LitFrequencies, 286, 15)
