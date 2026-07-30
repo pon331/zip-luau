@@ -971,7 +971,7 @@ end
 end
 
 @[native, checked] const function Inflate(Data: buffer, DecodedSize: number): buffer
-	if DecodedSize < 0 or DecodedSize ~= math.floor(DecodedSize) then
+	if DecodedSize < 0 or DecodedSize ~= (DecodedSize // 1) then
 		error("Invalid decoded size")
 	end
 
@@ -1089,10 +1089,8 @@ type ArchiveEntry = {
 		buffer.writeu32(Output, Position + 20, CompressedSize)
 		buffer.writeu32(Output, Position + 24, DataSize)
 		buffer.writeu16(Output, Position + 28, NameLength)
-		buffer.writeu16(Output, Position + 30, 0)
-		buffer.writeu16(Output, Position + 32, 0)
-		buffer.writeu16(Output, Position + 34, 0)
-		buffer.writeu16(Output, Position + 36, 0)
+		buffer.writeu32(Output, Position + 30, 0)
+		buffer.writeu32(Output, Position + 34, 0)
 		buffer.writeu32(Output, Position + 38, 0)
 		buffer.writeu32(Output, Position + 42, Entry.LocalOffset)
 		buffer.copy(Output, Position + 46, Entry.NameData, 0, NameLength)
@@ -1100,8 +1098,7 @@ type ArchiveEntry = {
 	end
 
 	buffer.writeu32(Output, Position, END_OF_CENTRAL_DIRECTORY)
-	buffer.writeu16(Output, Position + 4, 0)
-	buffer.writeu16(Output, Position + 6, 0)
+	buffer.writeu32(Output, Position + 4, 0)
 	buffer.writeu16(Output, Position + 8, #Entries)
 	buffer.writeu16(Output, Position + 10, #Entries)
 	buffer.writeu32(Output, Position + 12, CentralSize)
