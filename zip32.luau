@@ -669,7 +669,7 @@ end
 	local BytePos = 0
 
 	buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
-	Accumulator = bit32.rshift(Accumulator, 16)
+	Accumulator //= 65536
 	AccumulatorBits -= 16
 	BytePos += 2
 
@@ -678,7 +678,7 @@ end
 		AccumulatorBits += 3
 		if AccumulatorBits >= 16 then
 			buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
-			Accumulator = bit32.rshift(Accumulator, 16)
+			Accumulator //= 65536
 			AccumulatorBits -= 16
 			BytePos += 2
 		end
@@ -690,7 +690,7 @@ end
 		AccumulatorBits += buffer.readu8(CLLengths, Symbol)
 		if AccumulatorBits >= 16 then
 			buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
-			Accumulator = bit32.rshift(Accumulator, 16)
+			Accumulator //= 65536
 			AccumulatorBits -= 16
 			BytePos += 2
 		end
@@ -701,7 +701,7 @@ end
 			AccumulatorBits += Extra
 			if AccumulatorBits >= 16 then
 				buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
-				Accumulator = bit32.rshift(Accumulator, 16)
+				Accumulator //= 65536
 				AccumulatorBits -= 16
 				BytePos += 2
 			end
@@ -715,7 +715,7 @@ end
 			AccumulatorBits += buffer.readu8(LitLengths, Token)
 			if AccumulatorBits >= 16 then
 				buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
-				Accumulator = bit32.rshift(Accumulator, 16)
+				Accumulator //= 65536
 				AccumulatorBits -= 16
 				BytePos += 2
 			end
@@ -729,7 +729,7 @@ end
 			AccumulatorBits += buffer.readu8(LitLengths, LenSymbol)
 			if AccumulatorBits >= 16 then
 				buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
-				Accumulator = bit32.rshift(Accumulator, 16)
+				Accumulator //= 65536
 				AccumulatorBits -= 16
 				BytePos += 2
 			end
@@ -740,7 +740,7 @@ end
 				AccumulatorBits += LenExtra
 				if AccumulatorBits >= 16 then
 					buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
-					Accumulator = bit32.rshift(Accumulator, 16)
+					Accumulator //= 65536
 					AccumulatorBits -= 16
 					BytePos += 2
 				end
@@ -751,7 +751,7 @@ end
 			AccumulatorBits += buffer.readu8(DistLengths, DistIndex)
 			if AccumulatorBits >= 16 then
 				buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
-				Accumulator = bit32.rshift(Accumulator, 16)
+				Accumulator //= 65536
 				AccumulatorBits -= 16
 				BytePos += 2
 			end
@@ -762,7 +762,7 @@ end
 				AccumulatorBits += DistExtra
 				if AccumulatorBits >= 16 then
 					buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
-					Accumulator = bit32.rshift(Accumulator, 16)
+					Accumulator //= 65536
 					AccumulatorBits -= 16
 					BytePos += 2
 				end
