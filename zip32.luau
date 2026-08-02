@@ -229,23 +229,24 @@ end
 
 	const Root = buffer.readu16(Heap, 0)
 	const BitCounts = buffer.create((MaxBits + 1) * 4)
+	const Depths = buffer.create(NodeCapacity)
 	local Overflow = 0
 
-	for Index = 0, ActiveCount - 1 do
-		local Node = buffer.readu16(Active, Index * 2)
-		local Length = 0
-		while Node ~= Root do
-			Node = buffer.readu16(Parents, Node * 2)
-			Length += 1
-		end
+	for Node = Root - 1, 0, -1 do
+		const Dad = buffer.readu16(Parents, Node * 2)
+		if Dad ~= 0 then
+			local Bits = buffer.readu8(Depths, Dad) + 1
+			if Bits > MaxBits then
+				Bits = MaxBits
+				Overflow += 1
+			end
+			buffer.writeu8(Depths, Node, Bits)
 
-		if Length > MaxBits then
-			Length = MaxBits
-			Overflow += 1
+			if Node < SymbolCount then
+				const Offset = Bits * 4
+				buffer.writeu32(BitCounts, Offset, buffer.readu32(BitCounts, Offset) + 1)
+			end
 		end
-
-		const Offset = Length * 4
-		buffer.writeu32(BitCounts, Offset, buffer.readu32(BitCounts, Offset) + 1)
 	end
 
 	while Overflow > 0 do
