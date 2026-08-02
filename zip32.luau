@@ -25,7 +25,8 @@ const WINDOW_MASK = WINDOW_SIZE - 1
 const CHAIN_SIZE = 65536
 const CHAIN_MASK = CHAIN_SIZE - 1
 const HASH_SIZE = 65536
-const HASH_MASK = HASH_SIZE - 1
+const HASH_MULTIPLIER = 2654435761
+const HASH_SHIFT = 16
 const MATCH_MARKER = 0x40000000
 const DEFAULT_SEARCH_DEPTH = 64
 const MAX_SEARCH_DEPTH = 512
@@ -110,168 +111,195 @@ end
 
 @[native, checked] const function Hash3(Data: buffer, Position: number): number
 	const Value = buffer.readu16(Data, Position) + buffer.readu8(Data, Position + 2) * 0x10000
-	return bit32.band(bit32.bxor(Value, Value // 512, Value * 32), HASH_MASK)
+	return bit32.rshift(Value * HASH_MULTIPLIER, HASH_SHIFT)
 end
 
 @[native, checked] const function Hash4(Data: buffer, Position: number): number
 	const Value = bit32.band(buffer.readu32(Data, Position), 0xFFFFFF)
-	return bit32.band(bit32.bxor(Value, Value // 512, Value * 32), HASH_MASK)
+	return bit32.rshift(Value * HASH_MULTIPLIER, HASH_SHIFT)
 end
 
-@[native, checked] const function Less(Frequencies: buffer, A: number, B: number): boolean
-	const AFrequency = buffer.readu32(Frequencies, A * 4)
-	const BFrequency = buffer.readu32(Frequencies, B * 4)
-	return AFrequency < BFrequency or (AFrequency == BFrequency and A < B)
-end
+@[native, checked] const function SortByFrequency(Frequencies: buffer, SymbolCount: number, Keys: buffer, KeysAlt: buffer, Symbols: buffer, SymbolsAlt: buffer, Counts: buffer): number
+	local Count = 0
+	local MaxFrequency = 0
 
-@[native, checked] const function HeapPush(Heap: buffer, HeapSize: number, Frequencies: buffer, Node: number): number
-	local Index = HeapSize
-	while Index > 0 do
-		const Parent = (Index - 1) // 2
-		const ParentNode = buffer.readu16(Heap, Parent * 2)
-		if not Less(Frequencies, Node, ParentNode) then
-			break
+	for Symbol = 0, SymbolCount - 1 do
+		const Frequency = buffer.readu32(Frequencies, Symbol * 4)
+		if Frequency ~= 0 then
+			buffer.writeu32(Keys, Count * 4, Frequency)
+			buffer.writeu16(Symbols, Count * 2, Symbol)
+			Count += 1
+			if Frequency > MaxFrequency then
+				MaxFrequency = Frequency
+			end
 		end
-		buffer.writeu16(Heap, Index * 2, ParentNode)
-		Index = Parent
-	end
-	buffer.writeu16(Heap, Index * 2, Node)
-	return HeapSize + 1
-end
-
-@[native, checked] const function HeapPop(Heap: buffer, HeapSize: number, Frequencies: buffer): (number, number)
-	const Root = buffer.readu16(Heap, 0)
-	HeapSize -= 1
-
-	if HeapSize ~= 0 then
-		const Last = buffer.readu16(Heap, HeapSize * 2)
-		local Index = 0
-
-		while true do
-			local Child = Index * 2 + 1
-			if Child >= HeapSize then
-				break
-			end
-
-			if Child + 1 < HeapSize then
-				const Left = buffer.readu16(Heap, Child * 2)
-				const Right = buffer.readu16(Heap, (Child + 1) * 2)
-				if Less(Frequencies, Right, Left) then
-					Child += 1
-				end
-			end
-
-			const ChildNode = buffer.readu16(Heap, Child * 2)
-			if not Less(Frequencies, ChildNode, Last) then
-				break
-			end
-
-			buffer.writeu16(Heap, Index * 2, ChildNode)
-			Index = Child
-		end
-
-		buffer.writeu16(Heap, Index * 2, Last)
 	end
 
-	return Root, HeapSize
+	if Count < 2 then
+		return Count
+	end
+
+	local Passes = 1
+	if MaxFrequency >= 0x1000000 then
+		Passes = 4
+	elseif MaxFrequency >= 0x10000 then
+		Passes = 3
+	elseif MaxFrequency >= 0x100 then
+		Passes = 2
+	end
+
+	local Divisor = 1
+	for _ = 1, Passes do
+		buffer.fill(Counts, 0, 0, 256 * 4)
+
+		for Index = 0, Count - 1 do
+			const Digit = bit32.band(buffer.readu32(Keys, Index * 4) // Divisor, 0xFF) * 4
+			buffer.writeu32(Counts, Digit, buffer.readu32(Counts, Digit) + 1)
+		end
+
+		local Total = 0
+		for Digit = 0, 255 do
+			const Amount = buffer.readu32(Counts, Digit * 4)
+			buffer.writeu32(Counts, Digit * 4, Total)
+			Total += Amount
+		end
+
+		for Index = 0, Count - 1 do
+			const Key = buffer.readu32(Keys, Index * 4)
+			const Digit = bit32.band(Key // Divisor, 0xFF) * 4
+			const Target = buffer.readu32(Counts, Digit)
+			buffer.writeu32(Counts, Digit, Target + 1)
+			buffer.writeu32(KeysAlt, Target * 4, Key)
+			buffer.writeu16(SymbolsAlt, Target * 2, buffer.readu16(Symbols, Index * 2))
+		end
+
+		buffer.copy(Keys, 0, KeysAlt, 0, Count * 4)
+		buffer.copy(Symbols, 0, SymbolsAlt, 0, Count * 2)
+		Divisor *= 256
+	end
+
+	return Count
 end
 
 @[native, checked] const function BuildCodeLengths(Frequencies: buffer, SymbolCount: number, MaxBits: number): buffer
 	const Lengths = buffer.create(SymbolCount)
-	const NodeCapacity = SymbolCount * 2 + 1
-	const WorkFrequencies = buffer.create(NodeCapacity * 4)
-	const Parents = buffer.create(NodeCapacity * 2)
-	const Heap = buffer.create(SymbolCount * 2)
-	const Active = buffer.create(SymbolCount * 2)
+	const Keys = buffer.create(288 * 4)
+	const KeysAlt = buffer.create(288 * 4)
+	const Symbols = buffer.create(288 * 2)
+	const SymbolsAlt = buffer.create(288 * 2)
+	const Counts = buffer.create(256 * 4)
+	const Work = buffer.create(288 * 4)
+	const Count = SortByFrequency(Frequencies, SymbolCount, Keys, KeysAlt, Symbols, SymbolsAlt, Counts)
 
-	buffer.copy(WorkFrequencies, 0, Frequencies, 0, SymbolCount * 4)
-
-	local ActiveCount = 0
-	local HeapSize = 0
-	for Symbol = 0, SymbolCount - 1 do
-		if buffer.readu32(WorkFrequencies, Symbol * 4) ~= 0 then
-			buffer.writeu16(Active, ActiveCount * 2, Symbol)
-			ActiveCount += 1
-			HeapSize = HeapPush(Heap, HeapSize, WorkFrequencies, Symbol)
-		end
-	end
-
-	if ActiveCount == 0 then
+	if Count == 0 then
 		return Lengths
 	end
 
-	if ActiveCount == 1 then
-		const Only = buffer.readu16(Active, 0)
-		local Dummy = 0
-		if Only == 0 then
-			Dummy = 1
+	if Count == 1 then
+		const Only = buffer.readu16(Symbols, 0)
+		buffer.writeu8(Lengths, Only, 1)
+		buffer.writeu8(Lengths, if Only == 0 then 1 else 0, 1)
+		return Lengths
+	end
+
+	buffer.copy(Work, 0, Keys, 0, Count * 4)
+
+	buffer.writeu32(Work, 0, buffer.readu32(Work, 0) + buffer.readu32(Work, 4))
+
+	local Root = 0
+	local Leaf = 2
+	for Next = 1, Count - 2 do
+		if Leaf >= Count or buffer.readu32(Work, Root * 4) < buffer.readu32(Work, Leaf * 4) then
+			buffer.writeu32(Work, Next * 4, buffer.readu32(Work, Root * 4))
+			buffer.writeu32(Work, Root * 4, Next)
+			Root += 1
+		else
+			buffer.writeu32(Work, Next * 4, buffer.readu32(Work, Leaf * 4))
+			Leaf += 1
 		end
 
-		buffer.writeu32(WorkFrequencies, Dummy * 4, 1)
-		buffer.writeu16(Active, ActiveCount * 2, Dummy)
-		ActiveCount += 1
-		HeapSize = HeapPush(Heap, HeapSize, WorkFrequencies, Dummy)
-	end
-
-	local NextNode = SymbolCount
-	while HeapSize > 1 do
-		local A = 0
-		local B = 0
-		A, HeapSize = HeapPop(Heap, HeapSize, WorkFrequencies)
-		B, HeapSize = HeapPop(Heap, HeapSize, WorkFrequencies)
-
-		buffer.writeu32(WorkFrequencies, NextNode * 4, buffer.readu32(WorkFrequencies, A * 4) + buffer.readu32(WorkFrequencies, B * 4))
-		buffer.writeu16(Parents, A * 2, NextNode)
-		buffer.writeu16(Parents, B * 2, NextNode)
-		HeapSize = HeapPush(Heap, HeapSize, WorkFrequencies, NextNode)
-		NextNode += 1
-	end
-
-	const Root = buffer.readu16(Heap, 0)
-	const BitCounts = buffer.create((MaxBits + 1) * 4)
-	const Depths = buffer.create(NodeCapacity)
-	local Overflow = 0
-
-	for Node = Root - 1, 0, -1 do
-		const Dad = buffer.readu16(Parents, Node * 2)
-		if Dad ~= 0 then
-			local Bits = buffer.readu8(Depths, Dad) + 1
-			if Bits > MaxBits then
-				Bits = MaxBits
-				Overflow += 1
-			end
-			buffer.writeu8(Depths, Node, Bits)
-
-			if Node < SymbolCount then
-				const Offset = Bits * 4
-				buffer.writeu32(BitCounts, Offset, buffer.readu32(BitCounts, Offset) + 1)
-			end
+		if Leaf >= Count or (Root < Next and buffer.readu32(Work, Root * 4) < buffer.readu32(Work, Leaf * 4)) then
+			buffer.writeu32(Work, Next * 4, buffer.readu32(Work, Next * 4) + buffer.readu32(Work, Root * 4))
+			buffer.writeu32(Work, Root * 4, Next)
+			Root += 1
+		else
+			buffer.writeu32(Work, Next * 4, buffer.readu32(Work, Next * 4) + buffer.readu32(Work, Leaf * 4))
+			Leaf += 1
 		end
 	end
 
-	while Overflow > 0 do
-		local Bits = MaxBits - 1
-		while buffer.readu32(BitCounts, Bits * 4) == 0 do
-			Bits -= 1
-		end
-
-		buffer.writeu32(BitCounts, Bits * 4, buffer.readu32(BitCounts, Bits * 4) - 1)
-		buffer.writeu32(BitCounts, (Bits + 1) * 4, buffer.readu32(BitCounts, (Bits + 1) * 4) + 2)
-		buffer.writeu32(BitCounts, MaxBits * 4, buffer.readu32(BitCounts, MaxBits * 4) - 1)
-		Overflow -= 2
+	buffer.writeu32(Work, (Count - 2) * 4, 0)
+	for Next = Count - 3, 0, -1 do
+		buffer.writeu32(Work, Next * 4, buffer.readu32(Work, buffer.readu32(Work, Next * 4) * 4) + 1)
 	end
 
-	HeapSize = 0
-	for ActiveIndex = 0, ActiveCount - 1 do
-		HeapSize = HeapPush(Heap, HeapSize, WorkFrequencies, buffer.readu16(Active, ActiveIndex * 2))
+	local Available = 1
+	local Used = 0
+	local Depth = 0
+	local RootIndex = Count - 2
+	local NextIndex = Count - 1
+	while Available > 0 do
+		while RootIndex >= 0 and buffer.readu32(Work, RootIndex * 4) == Depth do
+			Used += 1
+			RootIndex -= 1
+		end
+		while Available > Used do
+			buffer.writeu32(Work, NextIndex * 4, Depth)
+			NextIndex -= 1
+			Available -= 1
+		end
+		Available = Used * 2
+		Depth += 1
+		Used = 0
 	end
 
-	for Bits = MaxBits, 1, -1 do
-		for _ = 1, buffer.readu32(BitCounts, Bits * 4) do
-			local Symbol = 0
-			Symbol, HeapSize = HeapPop(Heap, HeapSize, WorkFrequencies)
-			buffer.writeu8(Lengths, Symbol, Bits)
+	const Capacity = bit32.lshift(1, MaxBits)
+	local Kraft = 0
+	for Index = 0, Count - 1 do
+		local Length = buffer.readu32(Work, Index * 4)
+		if Length > MaxBits then
+			Length = MaxBits
+			buffer.writeu32(Work, Index * 4, MaxBits)
 		end
+		Kraft += bit32.lshift(1, MaxBits - Length)
+	end
+
+	local Cursor = 0
+	while Kraft > Capacity do
+		while Cursor < Count and buffer.readu32(Work, Cursor * 4) >= MaxBits do
+			Cursor += 1
+		end
+		if Cursor >= Count then
+			break
+		end
+
+		const Length = buffer.readu32(Work, Cursor * 4)
+		buffer.writeu32(Work, Cursor * 4, Length + 1)
+		Kraft -= bit32.lshift(1, MaxBits - Length - 1)
+	end
+
+	Cursor = Count - 1
+	while Cursor >= 0 and Kraft < Capacity do
+		const Floor = if Cursor + 1 < Count then buffer.readu32(Work, (Cursor + 1) * 4) else 1
+		local Length = buffer.readu32(Work, Cursor * 4)
+		local Contribution = bit32.lshift(1, MaxBits - Length)
+
+		while Length > Floor and Length > 1 and Kraft + Contribution <= Capacity do
+			Kraft += Contribution
+			Length -= 1
+			Contribution *= 2
+		end
+
+		buffer.writeu32(Work, Cursor * 4, Length)
+		Cursor -= 1
+	end
+
+	if Kraft ~= Capacity then
+		error("Internal Huffman length-limit failure")
+	end
+
+	for Index = 0, Count - 1 do
+		buffer.writeu8(Lengths, buffer.readu16(Symbols, Index * 2), buffer.readu32(Work, Index * 4))
 	end
 
 	return Lengths
@@ -373,7 +401,6 @@ const FIXED_LIT_MAX = 9
 const FIXED_DIST_LUT = buffer.fromstring("\0\0\5\0\16\0\5\0\8\0\5\0\24\0\5\0\4\0\5\0\20\0\5\0\12\0\5\0\28\0\5\0\2\0\5\0\18\0\5\0\10\0\5\0\26\0\5\0\6\0\5\0\22\0\5\0\14\0\5\0\0\0\0\0\1\0\5\0\17\0\5\0\9\0\5\0\25\0\5\0\5\0\5\0\21\0\5\0\13\0\5\0\29\0\5\0\3\0\5\0\19\0\5\0\11\0\5\0\27\0\5\0\7\0\5\0\23\0\5\0\15\0\5\0\0\0\0\0")
 const FIXED_DIST_MAX = 5
 
-
 @[native, checked] const function Tokenize(Data: buffer, SearchDepth: number): (buffer, number, buffer, buffer)
 	const Size = buffer.len(Data)
 	const Tokens = buffer.create(math.max(Size, 1) * 4)
@@ -382,16 +409,17 @@ const FIXED_DIST_MAX = 5
 	const Head = buffer.create(HASH_SIZE * 4)
 	const Previous = buffer.create(CHAIN_SIZE * 4)
 	const LastHashPosition = Size - MIN_MATCH
+	const LastWordPosition = Size - 4
 
 	local Position = 0
 	local TokenCount = 0
 
 	while Position < Size do
-		local BestLength = 0
+		local BestLength = MIN_MATCH - 1
 		local BestDistance = 0
 
 		if Position <= LastHashPosition then
-			const Hash = Hash3(Data, Position)
+			const Hash = if Position <= LastWordPosition then Hash4(Data, Position) else Hash3(Data, Position)
 			local CandidateEntry = buffer.readu32(Head, Hash * 4)
 
 			buffer.writeu32(Previous, bit32.band(Position, CHAIN_MASK) * 4, CandidateEntry)
@@ -399,19 +427,18 @@ const FIXED_DIST_MAX = 5
 
 			const Limit = math.min(MAX_MATCH, Size - Position)
 			const Prefix = buffer.readu16(Data, Position)
-			const Third = buffer.readu8(Data, Position + 2)
+			const MinCandidate = if Position > WINDOW_SIZE then Position - WINDOW_SIZE else 0
+			local TailByte = buffer.readu8(Data, Position + 2)
 			local Searches = 0
 
 			while CandidateEntry ~= 0 and Searches < SearchDepth do
 				const Candidate = CandidateEntry - 1
-				const Distance = Position - Candidate
-
-				if Distance > WINDOW_SIZE or Distance <= 0 then
+				if Candidate < MinCandidate or Candidate >= Position then
 					break
 				end
 
-				if buffer.readu16(Data, Candidate) == Prefix
-					and buffer.readu8(Data, Candidate + 2) == Third
+				if buffer.readu8(Data, Candidate + BestLength) == TailByte
+					and buffer.readu16(Data, Candidate) == Prefix
 				then
 					local Length = MIN_MATCH
 					while Length + 4 <= Limit and buffer.readu32(Data, Candidate + Length) == buffer.readu32(Data, Position + Length) do
@@ -423,10 +450,11 @@ const FIXED_DIST_MAX = 5
 
 					if Length > BestLength then
 						BestLength = Length
-						BestDistance = Distance
-						if Length == Limit then
+						BestDistance = Position - Candidate
+						if Length >= Limit then
 							break
 						end
+						TailByte = buffer.readu8(Data, Position + Length)
 					end
 				end
 
@@ -448,19 +476,17 @@ const FIXED_DIST_MAX = 5
 			buffer.writeu32(DistFrequencies, DistOffset, buffer.readu32(DistFrequencies, DistOffset) + 1)
 
 			const InsertEnd = math.min(Position + BestLength - 1, LastHashPosition)
-			const FastInsertEnd = math.min(InsertEnd, LastHashPosition - 1)
+			const FastInsertEnd = math.min(InsertEnd, LastWordPosition)
 			for InsertPosition = Position + 1, FastInsertEnd do
-				const Hash = Hash4(Data, InsertPosition)
-				const CandidateEntry = buffer.readu32(Head, Hash * 4)
-				buffer.writeu32(Previous, bit32.band(InsertPosition, CHAIN_MASK) * 4, CandidateEntry)
-				buffer.writeu32(Head, Hash * 4, InsertPosition + 1)
+				const Hash = Hash4(Data, InsertPosition) * 4
+				buffer.writeu32(Previous, bit32.band(InsertPosition, CHAIN_MASK) * 4, buffer.readu32(Head, Hash))
+				buffer.writeu32(Head, Hash, InsertPosition + 1)
 			end
 
-			if InsertEnd == LastHashPosition and InsertEnd > FastInsertEnd then
-				const Hash = Hash3(Data, InsertEnd)
-				const CandidateEntry = buffer.readu32(Head, Hash * 4)
-				buffer.writeu32(Previous, bit32.band(InsertEnd, CHAIN_MASK) * 4, CandidateEntry)
-				buffer.writeu32(Head, Hash * 4, InsertEnd + 1)
+			for InsertPosition = math.max(FastInsertEnd + 1, Position + 1), InsertEnd do
+				const Hash = Hash3(Data, InsertPosition) * 4
+				buffer.writeu32(Previous, bit32.band(InsertPosition, CHAIN_MASK) * 4, buffer.readu32(Head, Hash))
+				buffer.writeu32(Head, Hash, InsertPosition + 1)
 			end
 
 			Position += BestLength
@@ -637,79 +663,143 @@ end
 	const LitCodes = BuildCodes(LitLengths, 286)
 	const DistCodes = BuildCodes(DistLengths, 30)
 	const CLCodes = BuildCodes(CLLengths, 19)
-	const Output = buffer.create(DynamicSize)
-	local BitPos = 0
+	const Output = buffer.create(DynamicSize + 8)
+	local Accumulator = 5 + (HLit - 257) * 8 + (HDist - 1) * 256 + (HCLen - 4) * 8192
+	local AccumulatorBits = 17
+	local BytePos = 0
 
-	buffer.writebits(Output, BitPos, 3, 5)
-	BitPos += 3
-	buffer.writebits(Output, BitPos, 5, HLit - 257)
-	BitPos += 5
-	buffer.writebits(Output, BitPos, 5, HDist - 1)
-	BitPos += 5
-	buffer.writebits(Output, BitPos, 4, HCLen - 4)
-	BitPos += 4
+	buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
+	Accumulator = bit32.rshift(Accumulator, 16)
+	AccumulatorBits -= 16
+	BytePos += 2
 
 	for Index = 0, HCLen - 1 do
-		buffer.writebits(Output, BitPos, 3, buffer.readu8(CLLengths, buffer.readu8(CL_ORDER, Index)))
-		BitPos += 3
+		Accumulator = bit32.bor(Accumulator, bit32.lshift(buffer.readu8(CLLengths, buffer.readu8(CL_ORDER, Index)), AccumulatorBits))
+		AccumulatorBits += 3
+		if AccumulatorBits >= 16 then
+			buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
+			Accumulator = bit32.rshift(Accumulator, 16)
+			AccumulatorBits -= 16
+			BytePos += 2
+		end
 	end
 
 	for Index = 0, RLECount - 1 do
 		const Symbol = buffer.readu8(RLESymbols, Index)
-		const Length = buffer.readu8(CLLengths, Symbol)
-		buffer.writebits(Output, BitPos, Length, buffer.readu16(CLCodes, Symbol * 2))
-		BitPos += Length
+		Accumulator = bit32.bor(Accumulator, bit32.lshift(buffer.readu16(CLCodes, Symbol * 2), AccumulatorBits))
+		AccumulatorBits += buffer.readu8(CLLengths, Symbol)
+		if AccumulatorBits >= 16 then
+			buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
+			Accumulator = bit32.rshift(Accumulator, 16)
+			AccumulatorBits -= 16
+			BytePos += 2
+		end
 
 		const Extra = buffer.readu8(RLEExtraBits, Index)
 		if Extra ~= 0 then
-			buffer.writebits(Output, BitPos, Extra, buffer.readu8(RLEValues, Index))
-			BitPos += Extra
+			Accumulator = bit32.bor(Accumulator, bit32.lshift(buffer.readu8(RLEValues, Index), AccumulatorBits))
+			AccumulatorBits += Extra
+			if AccumulatorBits >= 16 then
+				buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
+				Accumulator = bit32.rshift(Accumulator, 16)
+				AccumulatorBits -= 16
+				BytePos += 2
+			end
 		end
 	end
 
 	for Index = 0, TokenCount - 1 do
 		const Token = buffer.readu32(Tokens, Index * 4)
 		if Token < MATCH_MARKER then
-			const Length = buffer.readu8(LitLengths, Token)
-			buffer.writebits(Output, BitPos, Length, buffer.readu16(LitCodes, Token * 2))
-			BitPos += Length
+			Accumulator = bit32.bor(Accumulator, bit32.lshift(buffer.readu16(LitCodes, Token * 2), AccumulatorBits))
+			AccumulatorBits += buffer.readu8(LitLengths, Token)
+			if AccumulatorBits >= 16 then
+				buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
+				Accumulator = bit32.rshift(Accumulator, 16)
+				AccumulatorBits -= 16
+				BytePos += 2
+			end
 		else
 			const MatchLength = bit32.band(Token // 32768, 0xFF) + MIN_MATCH
 			const Distance = bit32.band(Token, WINDOW_MASK) + 1
 
 			const LenIndex = buffer.readu8(LENGTH_CODE, MatchLength - MIN_MATCH)
 			const LenSymbol = 257 + LenIndex
-			const LenBits = buffer.readu8(LitLengths, LenSymbol)
-			buffer.writebits(Output, BitPos, LenBits, buffer.readu16(LitCodes, LenSymbol * 2))
-			BitPos += LenBits
+			Accumulator = bit32.bor(Accumulator, bit32.lshift(buffer.readu16(LitCodes, LenSymbol * 2), AccumulatorBits))
+			AccumulatorBits += buffer.readu8(LitLengths, LenSymbol)
+			if AccumulatorBits >= 16 then
+				buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
+				Accumulator = bit32.rshift(Accumulator, 16)
+				AccumulatorBits -= 16
+				BytePos += 2
+			end
 
 			const LenExtra = buffer.readu8(LEN_EXTRA, LenIndex)
 			if LenExtra ~= 0 then
-				buffer.writebits(Output, BitPos, LenExtra, MatchLength - buffer.readu16(LEN_BASE, LenIndex * 2))
-				BitPos += LenExtra
+				Accumulator = bit32.bor(Accumulator, bit32.lshift((MatchLength - buffer.readu16(LEN_BASE, LenIndex * 2)), AccumulatorBits))
+				AccumulatorBits += LenExtra
+				if AccumulatorBits >= 16 then
+					buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
+					Accumulator = bit32.rshift(Accumulator, 16)
+					AccumulatorBits -= 16
+					BytePos += 2
+				end
 			end
 
 			const DistIndex = buffer.readu8(DISTANCE_CODE, Distance - 1)
-			const DistBits = buffer.readu8(DistLengths, DistIndex)
-			buffer.writebits(Output, BitPos, DistBits, buffer.readu16(DistCodes, DistIndex * 2))
-			BitPos += DistBits
+			Accumulator = bit32.bor(Accumulator, bit32.lshift(buffer.readu16(DistCodes, DistIndex * 2), AccumulatorBits))
+			AccumulatorBits += buffer.readu8(DistLengths, DistIndex)
+			if AccumulatorBits >= 16 then
+				buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
+				Accumulator = bit32.rshift(Accumulator, 16)
+				AccumulatorBits -= 16
+				BytePos += 2
+			end
 
 			const DistExtra = buffer.readu8(DIST_EXTRA, DistIndex)
 			if DistExtra ~= 0 then
-				buffer.writebits(Output, BitPos, DistExtra, Distance - buffer.readu16(DIST_BASE, DistIndex * 2))
-				BitPos += DistExtra
+				Accumulator = bit32.bor(Accumulator, bit32.lshift((Distance - buffer.readu16(DIST_BASE, DistIndex * 2)), AccumulatorBits))
+				AccumulatorBits += DistExtra
+				if AccumulatorBits >= 16 then
+					buffer.writeu16(Output, BytePos, bit32.band(Accumulator, 0xFFFF))
+					Accumulator = bit32.rshift(Accumulator, 16)
+					AccumulatorBits -= 16
+					BytePos += 2
+				end
 			end
 		end
 	end
 
-	const EndLength = buffer.readu8(LitLengths, 256)
-	buffer.writebits(Output, BitPos, EndLength, buffer.readu16(LitCodes, 256 * 2))
-	BitPos += EndLength
+	Accumulator = bit32.bor(Accumulator, bit32.lshift(buffer.readu16(LitCodes, 512), AccumulatorBits))
+	AccumulatorBits += buffer.readu8(LitLengths, 256)
 
-	if BitPos ~= DynamicBits then
+	while AccumulatorBits > 0 do
+		buffer.writeu8(Output, BytePos, Accumulator % 256)
+		Accumulator = (Accumulator - Accumulator % 256) / 256
+		AccumulatorBits -= 8
+		BytePos += 1
+	end
+
+	if BytePos ~= DynamicSize then
 		error("Internal DEFLATE bit count mismatch")
 	end
-	return Output
+
+	const Trimmed = buffer.create(DynamicSize)
+	buffer.copy(Trimmed, 0, Output, 0, DynamicSize)
+	return Trimmed
+end
+
+const BIT_MASK = buffer.create(33 * 4)
+for Index = 0, 32 do
+	buffer.writeu32(BIT_MASK, Index * 4, if Index >= 32 then 0xFFFFFFFF else bit32.lshift(1, Index) - 1)
+end
+
+@[native, checked] const function PeekBits(Source: buffer, BitPos: number, Count: number, FastByteEnd: number): number
+	const Byte = BitPos // 8
+	if Byte <= FastByteEnd then
+		return bit32.band(bit32.rshift(buffer.readu32(Source, Byte), BitPos - Byte * 8), buffer.readu32(BIT_MASK, Count * 4))
+	end
+	return buffer.readbits(Source, BitPos, Count)
 end
 
 @[native, checked] const function ReadSymbol(Source: buffer, BitPos: number, BitEnd: number, Lut: buffer, MaxBits: number): (number, number)
@@ -719,7 +809,7 @@ end
 
 	const Available = BitEnd - BitPos
 	const Count = math.min(MaxBits, Available)
-	const Key = buffer.readbits(Source, BitPos, Count)
+	const Key = PeekBits(Source, BitPos, Count, buffer.len(Source) - 4)
 	const Entry = buffer.readu32(Lut, Key * 4)
 	const Length = Entry // 65536
 
@@ -734,6 +824,7 @@ end
 	local BitPos = SourceBitOffset
 	local DestinationPos = DestinationOffset
 	const DestinationSize = buffer.len(Destination)
+	const FastByteEnd = buffer.len(Source) - 4
 
 	local Final = 0
 	while Final == 0 do
@@ -741,8 +832,9 @@ end
 			error("DEFLATE block header is truncated")
 		end
 
-		Final = buffer.readbits(Source, BitPos, 1)
-		const BlockType = buffer.readbits(Source, BitPos + 1, 2)
+		const Header = PeekBits(Source, BitPos, 3, FastByteEnd)
+		Final = bit32.band(Header, 1)
+		const BlockType = bit32.band(Header // 2, 3)
 		BitPos += 3
 
 		if BlockType == 0 then
@@ -780,9 +872,10 @@ end
 					error("Dynamic DEFLATE header is truncated")
 				end
 
-				const HLit = buffer.readbits(Source, BitPos, 5) + 257
-				const HDist = buffer.readbits(Source, BitPos + 5, 5) + 1
-				const HCLen = buffer.readbits(Source, BitPos + 10, 4) + 4
+				const HeaderBits = PeekBits(Source, BitPos, 14, FastByteEnd)
+				const HLit = bit32.band(HeaderBits, 31) + 257
+				const HDist = bit32.band(HeaderBits // 32, 31) + 1
+				const HCLen = bit32.band(HeaderBits // 1024, 15) + 4
 				BitPos += 14
 
 				if HLit > 286 or HDist > 32 or BitPos + HCLen * 3 > SourceBitEnd then
@@ -791,7 +884,7 @@ end
 
 				const CLLens = buffer.create(19)
 				for Index = 0, HCLen - 1 do
-					buffer.writeu8(CLLens, buffer.readu8(CL_ORDER, Index), buffer.readbits(Source, BitPos, 3))
+					buffer.writeu8(CLLens, buffer.readu8(CL_ORDER, Index), PeekBits(Source, BitPos, 3, FastByteEnd))
 					BitPos += 3
 				end
 
@@ -811,7 +904,7 @@ end
 						if Index == 0 or BitPos + 2 > SourceBitEnd then
 							error("Invalid code-length repeat")
 						end
-						const Repeat = buffer.readbits(Source, BitPos, 2) + 3
+						const Repeat = PeekBits(Source, BitPos, 2, FastByteEnd) + 3
 						BitPos += 2
 						if Index + Repeat > Total then
 							error("Code-length repeat is out of bounds")
@@ -823,7 +916,7 @@ end
 						if BitPos + 3 > SourceBitEnd then
 							error("Zero repeat is truncated")
 						end
-						const Repeat = buffer.readbits(Source, BitPos, 3) + 3
+						const Repeat = PeekBits(Source, BitPos, 3, FastByteEnd) + 3
 						BitPos += 3
 						if Index + Repeat > Total then
 							error("Zero repeat is out of bounds")
@@ -833,7 +926,7 @@ end
 						if BitPos + 7 > SourceBitEnd then
 							error("Long zero repeat is truncated")
 						end
-						const Repeat = buffer.readbits(Source, BitPos, 7) + 11
+						const Repeat = PeekBits(Source, BitPos, 7, FastByteEnd) + 11
 						BitPos += 7
 						if Index + Repeat > Total then
 							error("Long zero repeat is out of bounds")
@@ -854,12 +947,18 @@ end
 			end
 
 			const LitMask = bit32.lshift(1, LitMax) - 1
+			const PairBits = LitMax * 2
+			const CanPair = LitMax ~= 0 and PairBits <= 25
+
 			while true do
-				if LitMax ~= 0
-					and BitPos + LitMax * 2 <= SourceBitEnd
+				if CanPair
+					and BitPos + PairBits <= SourceBitEnd
 					and DestinationPos + 2 <= DestinationSize
 				then
-					const Bits = buffer.readbits(Source, BitPos, LitMax * 2)
+					const Byte = BitPos // 8
+					const Bits = if Byte <= FastByteEnd
+						then bit32.rshift(buffer.readu32(Source, Byte), BitPos - Byte * 8)
+						else buffer.readbits(Source, BitPos, PairBits)
 					const FirstEntry = buffer.readu32(LitLut, bit32.band(Bits, LitMask) * 4)
 					const FirstLength = FirstEntry // 65536
 					const FirstSymbol = bit32.band(FirstEntry, 0xFFFF)
@@ -882,7 +981,7 @@ end
 				end
 				local Symbol: number
 				if LitMax ~= 0 and BitPos + LitMax <= SourceBitEnd then
-					const Entry = buffer.readu32(LitLut, buffer.readbits(Source, BitPos, LitMax) * 4)
+					const Entry = buffer.readu32(LitLut, PeekBits(Source, BitPos, LitMax, FastByteEnd) * 4)
 					const Length = Entry // 65536
 					if Length == 0 then
 						error("Invalid Huffman symbol")
@@ -909,13 +1008,13 @@ end
 						error("DEFLATE length is truncated")
 					end
 					if LenExtra ~= 0 then
-						Length += buffer.readbits(Source, BitPos, LenExtra)
+						Length += PeekBits(Source, BitPos, LenExtra, FastByteEnd)
 						BitPos += LenExtra
 					end
 
 					local DistSymbol: number
 					if DistMax ~= 0 and BitPos + DistMax <= SourceBitEnd then
-						const Entry = buffer.readu32(DistLut, buffer.readbits(Source, BitPos, DistMax) * 4)
+						const Entry = buffer.readu32(DistLut, PeekBits(Source, BitPos, DistMax, FastByteEnd) * 4)
 						const CodeLength = Entry // 65536
 						if CodeLength == 0 then
 							error("Invalid Huffman symbol")
@@ -935,7 +1034,7 @@ end
 						error("DEFLATE distance is truncated")
 					end
 					if DistExtra ~= 0 then
-						Distance += buffer.readbits(Source, BitPos, DistExtra)
+						Distance += PeekBits(Source, BitPos, DistExtra, FastByteEnd)
 						BitPos += DistExtra
 					end
 
