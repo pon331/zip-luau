@@ -437,9 +437,7 @@ const FIXED_DIST_MAX = 5
 					break
 				end
 
-				if buffer.readu8(Data, Candidate + BestLength) == TailByte
-					and buffer.readu16(Data, Candidate) == Prefix
-				then
+				if buffer.readu8(Data, Candidate + BestLength) == TailByte and buffer.readu16(Data, Candidate) == Prefix then
 					local Length = MIN_MATCH
 					while Length + 4 <= Limit and buffer.readu32(Data, Candidate + Length) == buffer.readu32(Data, Position + Length) do
 						Length += 4
@@ -951,14 +949,9 @@ end
 			const CanPair = LitMax ~= 0 and PairBits <= 25
 
 			while true do
-				if CanPair
-					and BitPos + PairBits <= SourceBitEnd
-					and DestinationPos + 2 <= DestinationSize
-				then
+				if CanPair and BitPos + PairBits <= SourceBitEnd and DestinationPos + 2 <= DestinationSize then
 					const Byte = BitPos // 8
-					const Bits = if Byte <= FastByteEnd
-						then bit32.rshift(buffer.readu32(Source, Byte), BitPos - Byte * 8)
-						else buffer.readbits(Source, BitPos, PairBits)
+					const Bits = if Byte <= FastByteEnd then bit32.rshift(buffer.readu32(Source, Byte), BitPos - Byte * 8) else buffer.readbits(Source, BitPos, PairBits)
 					const FirstEntry = buffer.readu32(LitLut, bit32.band(Bits, LitMask) * 4)
 					const FirstLength = FirstEntry // 65536
 					const FirstSymbol = bit32.band(FirstEntry, 0xFFFF)
@@ -1290,7 +1283,7 @@ end
 			end
 			buffer.copy(Value, 0, Data, DataStart, CompressedSize)
 		else
-			local _, DestinationPos = InflateInto(Data, DataStart * 8, (DataStart + CompressedSize) * 8, Value, 0)
+			const _, DestinationPos = InflateInto(Data, DataStart * 8, (DataStart + CompressedSize) * 8, Value, 0)
 			if DestinationPos ~= UncompressedSize then
 				error("ZIP entry size mismatch")
 			end
