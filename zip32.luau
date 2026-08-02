@@ -1118,8 +1118,11 @@ end
 	const MinimumPosition = math.max(Size - 0x10015, 0)
 	for Position = Size - 22, MinimumPosition, -1 do
 		if buffer.readu32(Data, Position) == END_OF_CENTRAL_DIRECTORY then
-			EOCDPosition = Position
-			break
+			const CommentLength = buffer.readu16(Data, Position + 20)
+			if Position + 22 + CommentLength == Size then
+				EOCDPosition = Position
+				break
+			end
 		end
 	end
 
