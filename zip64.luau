@@ -9,11 +9,11 @@ const DIST_BASE = buffer.fromstring("\1\0\2\0\3\0\4\0\5\0\7\0\9\0\13\0\17\0\25\0
 const DIST_EXTRA = buffer.fromstring("\0\0\0\0\1\1\2\2\3\3\4\4\5\5\6\6\7\7\8\8\9\9\10\10\11\11\12\12\13\13")
 const CL_ORDER = buffer.fromstring("\16\17\18\0\8\7\9\6\10\5\11\4\12\3\13\2\14\1\15")
 
-const LOCAL_FILE_HEADER = 0x04034B50
-const CENTRAL_DIRECTORY_ENTRY = 0x02014B50
-const END_OF_CENTRAL_DIRECTORY = 0x06054B50
-const ZIP64_END_OF_CENTRAL_DIRECTORY = 0x06064B50
-const ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR = 0x07064B50
+const LOCAL_FILE_HEADER = 0x0403_4B50
+const CENTRAL_DIRECTORY_ENTRY = 0x0201_4B50
+const END_OF_CENTRAL_DIRECTORY = 0x0605_4B50
+const ZIP64_END_OF_CENTRAL_DIRECTORY = 0x0606_4B50
+const ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR = 0x0706_4B50
 const ZIP64_EXTRA_FIELD = 0x0001
 
 const METHOD_STORE = 0
@@ -23,7 +23,7 @@ const VERSION_20 = 20
 const VERSION_45 = 45
 
 const INTEGER_U16_SENTINEL = 0xFFFFi
-const INTEGER_U32_SENTINEL = 0xFFFFFFFFi
+const INTEGER_U32_SENTINEL = 0xFFFF_FFFFi
 
 const MIN_MATCH = 3
 const MAX_MATCH = 258
@@ -32,9 +32,9 @@ const WINDOW_MASK = WINDOW_SIZE - 1
 const CHAIN_SIZE = 65536
 const CHAIN_MASK = CHAIN_SIZE - 1
 const HASH_SIZE = 65536
-const HASH_MULTIPLIER = 2654435761
+const HASH_MULTIPLIER = 2_654_435_761
 const HASH_SHIFT = 16
-const MATCH_MARKER = 0x40000000
+const MATCH_MARKER = 0x4000_0000
 const DEFAULT_SEARCH_DEPTH = 64
 const MAX_SEARCH_DEPTH = 512
 
@@ -63,7 +63,7 @@ for Index = 0, 255 do
 	local Value = Index
 	for _ = 1, 8 do
 		if bit32.band(Value, 1) ~= 0 then
-			Value = bit32.bxor(Value // 2, 0xEDB88320)
+			Value = bit32.bxor(Value // 2, 0xEDB8_8320)
 		else
 			Value //= 2
 		end
@@ -89,16 +89,16 @@ end
 
 @[native, checked] const function CRC32(Data: buffer): number
 	const Size = buffer.len(Data)
-	local CRC = 0xFFFFFFFF
+	local CRC = 0xFFFF_FFFF
 	local Position = 0
 
 	while Position + 8 <= Size do
 		const Value = bit32.bxor(CRC, buffer.readu32(Data, Position))
 		CRC = bit32.bxor(
 			buffer.readu32(CRC_TABLES, 0x1C00 + bit32.band(Value, 0xFF) * 4),
-			buffer.readu32(CRC_TABLES, 0x1800 + bit32.band(Value // 256, 0xFF) * 4),
-			buffer.readu32(CRC_TABLES, 0x1400 + bit32.band(Value // 65536, 0xFF) * 4),
-			buffer.readu32(CRC_TABLES, 0x1000 + (Value // 16777216) * 4),
+			buffer.readu32(CRC_TABLES, 0x1800 + bit32.band(Value // 0x100, 0xFF) * 4),
+			buffer.readu32(CRC_TABLES, 0x1400 + bit32.band(Value // 0x10000, 0xFF) * 4),
+			buffer.readu32(CRC_TABLES, 0x1000 + (Value // 0x0100_0000) * 4),
 			buffer.readu32(CRC_TABLES, 0x0C00 + buffer.readu8(Data, Position + 4) * 4),
 			buffer.readu32(CRC_TABLES, 0x0800 + buffer.readu8(Data, Position + 5) * 4),
 			buffer.readu32(CRC_TABLES, 0x0400 + buffer.readu8(Data, Position + 6) * 4),
@@ -113,7 +113,7 @@ end
 		Position += 1
 	end
 
-	return bit32.bxor(CRC, 0xFFFFFFFF)
+	return bit32.bxor(CRC, 0xFFFF_FFFF)
 end
 
 @[native, checked] const function Hash3(Data: buffer, Position: number): number
@@ -122,7 +122,7 @@ end
 end
 
 @[native, checked] const function Hash4(Data: buffer, Position: number): number
-	const Value = bit32.band(buffer.readu32(Data, Position), 0xFFFFFF)
+	const Value = bit32.band(buffer.readu32(Data, Position), 0x00FF_FFFF)
 	return bit32.rshift(Value * HASH_MULTIPLIER, HASH_SHIFT)
 end
 
@@ -147,7 +147,7 @@ end
 	end
 
 	local Passes = 1
-	if MaxFrequency >= 0x1000000 then
+	if MaxFrequency >= 0x0100_0000 then
 		Passes = 4
 	elseif MaxFrequency >= 0x10000 then
 		Passes = 3
@@ -796,7 +796,7 @@ end
 
 const BIT_MASK = buffer.create(33 * 4)
 for Index = 0, 32 do
-	buffer.writeu32(BIT_MASK, Index * 4, if Index >= 32 then 0xFFFFFFFF else bit32.lshift(1, Index) - 1)
+	buffer.writeu32(BIT_MASK, Index * 4, if Index >= 32 then 0xFFFF_FFFF else bit32.lshift(1, Index) - 1)
 end
 
 @[native, checked] const function PeekBits(Source: buffer, BitPos: number, Count: number, FastByteEnd: number): number
@@ -1140,7 +1140,7 @@ end
 	if FitsU32(Value) then
 		buffer.writeu32(Output, Offset, integer.tonumber(Value))
 	else
-		buffer.writeu32(Output, Offset, 0xFFFFFFFF)
+		buffer.writeu32(Output, Offset, 0xFFFF_FFFF)
 	end
 end
 
@@ -1348,9 +1348,9 @@ end
 	local Compressed64 = NumberToInteger(Compressed32, "compressed size")
 	local LocalOffset64 = NumberToInteger(LocalOffset32, "local header offset")
 	local DiskStart = DiskStart16
-	const NeedUncompressed = Uncompressed32 == 0xFFFFFFFF
-	const NeedCompressed = Compressed32 == 0xFFFFFFFF
-	const NeedOffset = LocalOffset32 == 0xFFFFFFFF
+	const NeedUncompressed = Uncompressed32 == 0xFFFF_FFFF
+	const NeedCompressed = Compressed32 == 0xFFFF_FFFF
+	const NeedOffset = LocalOffset32 == 0xFFFF_FFFF
 	const NeedDisk = DiskStart16 == 0xFFFF
 
 	if not NeedUncompressed and not NeedCompressed and not NeedOffset and not NeedDisk then
@@ -1436,7 +1436,7 @@ end
 	local CentralSize64 = NumberToInteger(LegacyCentralSize, "central directory size")
 	local CentralOffset64 = NumberToInteger(LegacyCentralOffset, "central directory offset")
 	local CentralBoundary = EOCDPosition
-	const NeedsZip64EOCD = LegacyEntriesOnDisk == 0xFFFF or LegacyEntryCount == 0xFFFF or LegacyCentralSize == 0xFFFFFFFF or LegacyCentralOffset == 0xFFFFFFFF
+	const NeedsZip64EOCD = LegacyEntriesOnDisk == 0xFFFF or LegacyEntryCount == 0xFFFF or LegacyCentralSize == 0xFFFF_FFFF or LegacyCentralOffset == 0xFFFF_FFFF
 
 	if NeedsZip64EOCD then
 		const LocatorPosition = EOCDPosition - 20
