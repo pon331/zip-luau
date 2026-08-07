@@ -62,7 +62,7 @@ const CRC_TABLES = buffer.create(8 * 256 * 4)
 for Index = 0, 255 do
 	local Value = Index
 	for _ = 1, 8 do
-		if bit32.band(Value, 1) ~= 0 then
+		if bit32.btest(Value, 1) then
 			Value = bit32.bxor(Value // 2, 0xEDB8_8320)
 		else
 			Value //= 2
